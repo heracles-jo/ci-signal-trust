@@ -17,14 +17,18 @@
     "test:cov": "vitest run --coverage",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "cli": "tsx src/cli.ts"
+    "cli": "tsx src/cli.ts",
+    "ingest:github": "tsx src/ingest-github.ts"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.33",
     "dotenv": "^16.5.0",
     "drizzle-orm": "^0.45.2",
+    "fast-xml-parser": "^5.8.0",
     "fastify": "^5.4.0",
-    "pg": "^8.16.0"
+    "fflate": "^0.8.3",
+    "pg": "^8.16.0",
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",

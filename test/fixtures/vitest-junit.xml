@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="14" failures="0" errors="0" time="0.002473542">
+    <testsuite name="test/classifier.test.ts" timestamp="2026-06-04T14:50:49.641Z" hostname="heracless-Mac-mini.local" tests="14" failures="0" errors="0" skipped="0" time="0.002473542">
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; returns indeterminate for empty input" time="0.000627542">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 1: same-SHA flake &gt; flags pass+fail on the same SHA across separate runs" time="0.000119708">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 1: same-SHA flake &gt; flags retry-pass-after-fail on the same SHA (same run, higher attempt)" time="0.000088333">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 1: same-SHA flake &gt; takes precedence over cross-SHA signals (rule 1 before rule 2)" time="0.0000605">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 2: cross-SHA flip-flop &gt; flags alternating pass/fail across distinct SHAs" time="0.000123791">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 2: cross-SHA flip-flop &gt; flags a single transition fail-&gt;pass across two SHAs" time="0.000087">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 2: cross-SHA flip-flop &gt; orders by completedAt regardless of input order before deciding alternation" time="0.000075125">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 2: cross-SHA flip-flop &gt; uses attempt as a tie-break when completedAt is identical" time="0.000046042">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 3: real defect &gt; flags only-failures across multiple distinct SHAs as real_defect" time="0.000226416">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 3: real defect &gt; flags a single lone failure as real_defect" time="0.000062958">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 4: indeterminate &gt; returns indeterminate when there are no failures at all (all passes)" time="0.000086125">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 4: indeterminate &gt; treats duplicate identical failures on one SHA as real_defect (no pass present)" time="0.000028833">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; rule 4: indeterminate &gt; returns indeterminate for a single passing observation" time="0.000033042">
+        </testcase>
+        <testcase classname="test/classifier.test.ts" name="classifyTest &gt; produces an exhaustive discriminated union verdict" time="0.000051834">
+        </testcase>
+    </testsuite>
+</testsuites>
