@@ -173,6 +173,46 @@ placeholders only.
 | `pnpm db:generate`| `drizzle-kit generate` |
 | `pnpm db:migrate` | apply migrations |
 | `pnpm cli ...`    | `tsx src/cli.ts` |
+| `pnpm ingest:github` | pull our own Actions run/test history into Postgres |
+
+## Continuous ingestion (daily)
+
+We eat our own dog food: a daily GitHub Actions cron pulls this repo's own CI
+run/test history into a **persistent** Postgres so the FFR signal accrues over
+time (not just a demo slice). The pull-ingester is idempotent on
+`(provider, externalRunId)`, so re-running never double-counts.
+
+- **Workflow:** `.github/workflows/ingest.yml` — `schedule: 17 6 * * *` (daily,
+  UTC) plus `workflow_dispatch` for on-demand backfill (`max_runs` input).
+- **Auth:** least privilege. The workflow's built-in `GITHUB_TOKEN`
+  (`actions: read`) reads our own runs + artifacts; no separate PAT is needed.
+- **Observability:** each run appends a *last-ingested marker* (repo, UTC
+  timestamp, counts) to the Actions job summary, and the accruing `ci_runs`
+  rows are themselves the durable marker.
+
+### Ingestion home (decision)
+
+Per the Phase-2 guardrail we use a **minimal managed Postgres** (e.g. a
+free-tier Neon/Supabase/Render database) reachable from GitHub Actions, set as
+the `DATABASE_URL` **repo secret**. We deliberately do **not** fold in HER-6
+(migrating the repo to a company GitHub org): the existing
+`heracles-jo/ci-signal-trust` repo is a stable enough home for continuous
+ingestion, and the org migration is an independent change.
+
+Set the secret once (never committed):
+
+```bash
+gh secret set DATABASE_URL -R heracles-jo/ci-signal-trust --body 'postgres://USER:PASS@HOST/DB?sslmode=require'
+```
+
+The workflow fails fast with a clear error if `DATABASE_URL` is unset.
+
+### JUnit reports from our own CI
+
+The `CI` workflow emits a **JUnit XML** report from Vitest
+(`reports/junit.xml`, gated on `GITHUB_ACTIONS`) and uploads it as the
+`junit-report` build artifact (`if: always()`, 30-day retention) so per-test
+outcomes are captured for every CI run going forward.
 
 ## Docker
 

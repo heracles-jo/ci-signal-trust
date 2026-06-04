@@ -1,8 +1,9 @@
 import 'dotenv/config';
+import { appendFileSync } from 'node:fs';
 import { pino } from 'pino';
 import { createDb } from './db/client.js';
 import { GithubActionsClient } from './providers/github/client.js';
-import { pullIngest } from './providers/github/ingest.js';
+import { type PullIngestSummary, pullIngest } from './providers/github/ingest.js';
 
 /**
  * Entrypoint for the GitHub Actions pull-ingester (the HER-9 daily-cron target).
@@ -60,9 +61,34 @@ async function main(): Promise<void> {
       logger,
     });
     logger.info({ owner, repo, ...summary }, 'github pull ingest finished');
+    writeRunMarker(owner, repo, summary);
   } finally {
     await dbHandle.pool.end();
   }
+}
+
+/**
+ * Append a human-readable run-log marker to the GitHub Actions job summary when
+ * running under the daily-cron workflow. This is the observable last-ingested
+ * marker required by HER-9; outside CI ($GITHUB_STEP_SUMMARY unset) it is a no-op.
+ */
+function writeRunMarker(owner: string, repo: string, summary: PullIngestSummary): void {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) {
+    return;
+  }
+  const md = [
+    '### Daily ingest — last run',
+    '',
+    `- **Repo:** \`${owner}/${repo}\``,
+    `- **At (UTC):** ${new Date().toISOString()}`,
+    `- **Runs scanned:** ${summary.runsScanned} (attempts: ${summary.attemptsConsidered})`,
+    `- **Ingested:** ${summary.ingested} · **Duplicates (idempotent no-op):** ${summary.duplicates} · **Skipped:** ${summary.skipped}`,
+    `- **Observations written:** ${summary.observationsWritten} ` +
+      `(junit: ${summary.junitAttempts}, job: ${summary.jobAttempts}, run: ${summary.runAttempts})`,
+    '',
+  ].join('\n');
+  appendFileSync(summaryPath, `${md}\n`);
 }
 
 main().catch((err) => {

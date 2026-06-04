@@ -72,6 +72,15 @@ jobs:
       - name: Test + coverage (Vitest, real Postgres E2E)
         run: pnpm test:cov
 
+      - name: Upload JUnit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-report
+          path: reports/junit.xml
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Dependency audit (block high/critical)
         run: pnpm audit --audit-level high
 
