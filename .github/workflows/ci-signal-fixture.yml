@@ -1,0 +1,87 @@
+name: CI Signal Fixture
+
+# HER-10: generates a REALISTIC CI-signal population (flake + real_defect) on our
+# own repo so the dogfooded FFR baseline has a non-empty denominator before the
+# ~2026-06-18 maturity window. The jobs here are INTENTIONALLY flaky/failing and
+# are NOT required status checks — there is no `pull_request` trigger, so they
+# never gate PRs or merges. The daily ingest (ingest.yml) pulls these runs and
+# their JUnit artifacts into Postgres. See ci-signal-fixtures/README.md.
+on:
+  schedule:
+    # Every 3 hours, offset off the top of the hour to dodge cron congestion.
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Don't let scheduled and manual runs of the same ref pile up; we want distinct
+# observations over time, not a thundering herd.
+concurrency:
+  group: ci-signal-fixture-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  flaky-signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run flaky fixture suite (intermittent — expected to flip pass/fail)
+        run: pnpm test:fixtures:flaky
+
+      - name: Upload JUnit (flaky)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-fixture-flaky
+          path: reports/fixture-junit.xml
+          if-no-files-found: error
+          retention-days: 30
+
+  defect-signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run real-defect fixture suite (expected to fail)
+        run: pnpm test:fixtures:defect
+
+      - name: Upload JUnit (defect)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-fixture-defect
+          path: reports/fixture-junit.xml
+          if-no-files-found: error
+          retention-days: 30
