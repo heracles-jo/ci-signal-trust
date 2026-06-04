@@ -1,0 +1,67 @@
+# HER-12 — Quarantine recommend-with-confirmation loop: end-to-end proof
+# Generated 2026-06-04T22:16:02Z against a live Postgres.
+
+## 0. Apply migrations (adds confirmation lifecycle + audit table)
+Migrations applied successfully.
+
+## 1. Seed two same-SHA flakes via the real ingestion path
+Seeded same-SHA flakes: integration.PaymentGatewaySpec#chargesCard and integration.SessionSpec#expiresIdleSession
+
+## 2. Recompute (cli report) -> classifier RECOMMENDS, gate PASS. No mutation yet.
+CI Signal Trust — Flaky-Failure Report
+======================================
+Window:            last 3650 day(s)
+Total failures:    2
+Flaky failures:    2
+FFR:               100.00%
+Reclaimed (est.):  0.50 h
+Classifier gate:   PASS
+
+Quarantine candidates (2):
+  - integration.PaymentGatewaySpec#chargesCard
+      classification: flake | flaky failures: 1
+      reason: passed and failed on identical SHA deadbeef
+  - integration.SessionSpec#expiresIdleSession
+      classification: flake | flaky failures: 1
+      reason: passed and failed on identical SHA deadbeef
+
+## 3. Manifest is EMPTY: a recommendation alone mutates nothing.
+Quarantine manifest (actioned only): 0 test(s)
+
+## 4. SAFETY: attempt to action a recommendation WITHOUT sign-off -> REFUSED.
+Refused: Cannot action "integration.PaymentGatewaySpec#chargesCard": current status is "recommended". action is not a legal transition from "recommended".
+(exit 1, refusal expected)
+
+## 5. Board signs off (recommended -> confirmed). Still no mutation.
+CONFIRMED integration.PaymentGatewaySpec#chargesCard by board:heracles (sign-off recorded).
+Quarantine manifest (actioned only): 0 test(s)
+
+## 6. Action the CONFIRMED recommendation (confirmed -> actioned). THIS is the only mutation.
+ACTIONED integration.PaymentGatewaySpec#chargesCard by board:heracles — now in the quarantine manifest.
+
+## 7. Manifest now contains exactly ONE actioned test.
+[
+  {
+    "testIdentity": "integration.PaymentGatewaySpec#chargesCard",
+    "reason": "passed and failed on identical SHA deadbeef",
+    "confirmedBy": "board:heracles",
+    "confirmedAt": "2026-06-04T22:16:05.498Z",
+    "actionedBy": "board:heracles",
+    "actionedAt": "2026-06-04T22:16:06.417Z"
+  }
+]
+
+## 8. The OTHER recommended flake was NEVER confirmed -> still absent from manifest.
+Quarantine rows: 2
+  - integration.PaymentGatewaySpec#chargesCard  [actioned]  flaky=1
+      passed and failed on identical SHA deadbeef
+      confirmed by board:heracles at 2026-06-04T22:16:05.498Z
+      actioned by board:heracles at 2026-06-04T22:16:06.417Z
+  - integration.SessionSpec#expiresIdleSession  [recommended]  flaky=1
+      passed and failed on identical SHA deadbeef
+
+## 9. Full append-only AUDIT TRAIL for the actioned test.
+Audit trail for integration.PaymentGatewaySpec#chargesCard: 3 entr(y/ies)
+  2026-06-04T22:16:04.109Z  integration.PaymentGatewaySpec#chargesCard  ∅ -> recommended  by classifier (system): passed and failed on identical SHA deadbeef
+  2026-06-04T22:16:05.501Z  integration.PaymentGatewaySpec#chargesCard  recommended -> confirmed  by board:heracles (board): verified same-SHA flake, runs demo-run-1/2
+  2026-06-04T22:16:06.419Z  integration.PaymentGatewaySpec#chargesCard  confirmed -> actioned  by board:heracles (human): apply quarantine to CI

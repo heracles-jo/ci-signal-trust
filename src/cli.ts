@@ -1,12 +1,24 @@
 import { loadConfig } from './config.js';
+import type { Database } from './db/client.js';
 import { createDb } from './db/client.js';
 import { evaluateClassifier, evaluateGate } from './eval/evaluation.js';
+import {
+  actionQuarantine,
+  buildQuarantineManifest,
+  confirmQuarantine,
+  getAuditTrail,
+  listQuarantine,
+  type QuarantineStatus,
+  QuarantineTransitionError,
+  rejectQuarantine,
+} from './quarantine.js';
 import { computeFfr, type FfrReport } from './reporting.js';
 
 /**
  * CLI for operators. Subcommands:
  *   report   [--window-days N] [--json]   FFR + quarantine over the rolling window (DB)
  *   evaluate [--json]                      classifier precision/recall + hard gate (no DB)
+ *   quarantine <sub> ...                   confirmation loop (DB), see runQuarantine
  * Reuses src/reporting.ts and src/eval so the CLI matches the live behavior.
  */
 
@@ -122,14 +134,157 @@ function runEvaluate(json: boolean): void {
   }
 }
 
+/** Pull a `--flag value` pair out of argv; returns undefined when absent. */
+function flagValue(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  if (i === -1) {
+    return undefined;
+  }
+  return argv[i + 1];
+}
+
+/**
+ * Quarantine confirmation loop CLI. Subcommands:
+ *   list [--status S] [--json]                  show quarantine rows
+ *   confirm <test> --by <actor> [--note N] [--board]   sign off: recommended->confirmed
+ *   reject  <test> --by <actor> [--note N] [--board]   decline:  recommended->rejected
+ *   action  <test> --by <actor> [--note N]             apply:    confirmed->actioned
+ *   manifest [--json]                           the actioned-only manifest CI consumes
+ *   audit [<test>] [--json]                     append-only audit trail
+ */
+async function runQuarantine(sub: string | undefined, argv: string[]): Promise<void> {
+  const json = argv.includes('--json');
+  const config = loadConfig();
+  const dbHandle = createDb(config.databaseUrl);
+  const { db } = dbHandle;
+  try {
+    switch (sub) {
+      case 'list':
+        await quarantineList(db, flagValue(argv, '--status') as QuarantineStatus | undefined, json);
+        break;
+      case 'confirm':
+      case 'reject':
+      case 'action':
+        await quarantineDecision(db, sub, argv);
+        break;
+      case 'manifest':
+        await quarantineManifest(db, json);
+        break;
+      case 'audit':
+        await quarantineAudit(db, argv, json);
+        break;
+      default:
+        console.error(
+          'Usage: cli quarantine <list|confirm|reject|action|manifest|audit> [...] [--json]',
+        );
+        process.exitCode = 2;
+    }
+  } finally {
+    await dbHandle.pool.end();
+  }
+}
+
+async function quarantineList(
+  db: Database,
+  status: QuarantineStatus | undefined,
+  json: boolean,
+): Promise<void> {
+  const rows = await listQuarantine(db, status);
+  if (json) {
+    console.log(JSON.stringify(rows, null, 2));
+    return;
+  }
+  console.log(`Quarantine rows${status ? ` (status=${status})` : ''}: ${rows.length}`);
+  for (const r of rows) {
+    console.log(`  - ${r.testIdentity}  [${r.status}]  flaky=${r.flakyCount}`);
+    console.log(`      ${r.reason}`);
+    if (r.confirmedBy) {
+      console.log(`      confirmed by ${r.confirmedBy} at ${r.confirmedAt?.toISOString()}`);
+    }
+    if (r.actionedBy) {
+      console.log(`      actioned by ${r.actionedBy} at ${r.actionedAt?.toISOString()}`);
+    }
+  }
+}
+
+async function quarantineDecision(
+  db: Database,
+  sub: 'confirm' | 'reject' | 'action',
+  argv: string[],
+): Promise<void> {
+  const test = argv[0];
+  const actor = flagValue(argv, '--by');
+  const note = flagValue(argv, '--note');
+  if (!test || test.startsWith('--') || !actor) {
+    console.error(`Usage: cli quarantine ${sub} <test-identity> --by <actor> [--note "..."]`);
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    if (sub === 'confirm') {
+      const actorType = argv.includes('--board') ? ('board' as const) : ('human' as const);
+      const row = await confirmQuarantine(db, test, { actor, actorType, note });
+      console.log(`CONFIRMED ${row.testIdentity} by ${actor} (sign-off recorded).`);
+    } else if (sub === 'reject') {
+      const actorType = argv.includes('--board') ? ('board' as const) : ('human' as const);
+      const row = await rejectQuarantine(db, test, { actor, actorType, note });
+      console.log(`REJECTED ${row.testIdentity} by ${actor} (recorded).`);
+    } else {
+      const row = await actionQuarantine(db, test, { actor, note });
+      console.log(`ACTIONED ${row.testIdentity} by ${actor} — now in the quarantine manifest.`);
+    }
+  } catch (err) {
+    if (err instanceof QuarantineTransitionError) {
+      console.error(`Refused: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
+}
+
+async function quarantineManifest(db: Database, json: boolean): Promise<void> {
+  const manifest = await buildQuarantineManifest(db);
+  if (json) {
+    console.log(JSON.stringify(manifest, null, 2));
+    return;
+  }
+  console.log(`Quarantine manifest (actioned only): ${manifest.length} test(s)`);
+  for (const m of manifest) {
+    console.log(`  - ${m.testIdentity}`);
+    console.log(`      confirmed by ${m.confirmedBy ?? '?'} | actioned by ${m.actionedBy ?? '?'}`);
+  }
+}
+
+async function quarantineAudit(db: Database, argv: string[], json: boolean): Promise<void> {
+  const test = argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
+  const trail = await getAuditTrail(db, test);
+  if (json) {
+    console.log(JSON.stringify(trail, null, 2));
+    return;
+  }
+  console.log(`Audit trail${test ? ` for ${test}` : ''}: ${trail.length} entr(y/ies)`);
+  for (const a of trail) {
+    console.log(
+      `  ${a.createdAt.toISOString()}  ${a.testIdentity}  ${a.fromStatus ?? '∅'} -> ${a.toStatus}` +
+        `  by ${a.actor} (${a.actorType}): ${a.note}`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
-  const { command, windowDays, json } = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const { command, windowDays, json } = parseArgs(argv);
   if (command === 'report') {
     await runReport(windowDays, json);
   } else if (command === 'evaluate') {
     runEvaluate(json);
+  } else if (command === 'quarantine') {
+    await runQuarantine(argv[1], argv.slice(2));
   } else {
-    console.error('Usage: cli <report [--window-days N] | evaluate> [--json]');
+    console.error(
+      'Usage: cli <report [--window-days N] | evaluate | quarantine <sub> ...> [--json]',
+    );
     process.exit(2);
   }
 }

@@ -3,6 +3,7 @@ import { type Classification, classifyTest, type TestObservation } from './class
 import type { Database } from './db/client.js';
 import { ciRuns, quarantine, testResults } from './db/schema.js';
 import { classifierGate, type GateResult } from './eval/evaluation.js';
+import { applyRecommendation, clearRecommendation } from './quarantine.js';
 
 /**
  * Hours saved per avoided red-build investigation. A transparent, documented
@@ -112,6 +113,12 @@ export type RecomputeResult = {
  *   - anything else          -> clear an existing recommendation (status='cleared')
  * Idempotent: running twice with the same data yields the same rows.
  *
+ * Confirmation loop (HER-12): the classifier only ever owns the
+ * `recommended`/`cleared` states. Once a human has disposed of a recommendation
+ * (`confirmed`/`actioned`/`rejected`), recompute leaves that row untouched — a
+ * recommendation is never silently revoked or re-issued over a human decision,
+ * and an `actioned` quarantine is never un-applied by a background recompute.
+ *
  * `gateOverride` is for tests; production passes nothing and the live gate runs.
  */
 export async function recomputeQuarantine(
@@ -131,44 +138,20 @@ export async function recomputeQuarantine(
 
     if (recommend) {
       const flakyCount = obs.filter((o) => o.outcome === 'failed').length;
-      await db
-        .insert(quarantine)
-        .values({
-          testIdentity,
-          status: 'recommended',
-          classification: classification.verdict,
-          reason: classification.reason,
-          flakyCount,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: quarantine.testIdentity,
-          set: {
-            status: 'recommended',
-            classification: classification.verdict,
-            reason: classification.reason,
-            flakyCount,
-            updatedAt: new Date(),
-          },
-        });
+      await applyRecommendation(db, {
+        testIdentity,
+        classification: classification.verdict,
+        reason: classification.reason,
+        flakyCount,
+      });
     } else {
       // Not a flake (or recommendation suppressed by the gate): clear any
-      // existing recommendation so nothing stays quarantined unsafely.
+      // existing classifier recommendation so nothing stays recommended unsafely.
       const reason =
         classification.verdict === 'flake' && !gate.passed
           ? `recommendation suppressed by classifier gate: ${gate.summary}`
           : classification.reason;
-      await db
-        .update(quarantine)
-        .set({
-          status: 'cleared',
-          classification: classification.verdict,
-          reason,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(eq(quarantine.testIdentity, testIdentity), eq(quarantine.status, 'recommended')),
-        );
+      await clearRecommendation(db, testIdentity, reason);
     }
   }
 
