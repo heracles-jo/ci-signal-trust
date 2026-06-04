@@ -8,6 +8,13 @@
       "when": 1780582256968,
       "tag": "0000_thin_polaris",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780611047502,
+      "tag": "0001_quarantine_confirmation",
+      "breakpoints": true
     }
   ]
 }

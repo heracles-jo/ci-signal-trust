@@ -69,10 +69,52 @@ export const quarantine = pgTable(
     flakyCount: integer('flaky_count').notNull().default(0),
     firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    // Human/board disposition (HER-12). Populated only when a sign-off is
+    // recorded; NULL while a row is merely `recommended` by the classifier.
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    confirmedBy: text('confirmed_by'),
+    actionedAt: timestamp('actioned_at', { withTimezone: true }),
+    actionedBy: text('actioned_by'),
   },
-  (t) => [check('quarantine_status_chk', sql`${t.status} in ('recommended','cleared')`)],
+  (t) => [
+    check(
+      'quarantine_status_chk',
+      // recommended -> confirmed -> actioned is the sign-off path; rejected is a
+      // declined recommendation; cleared is a withdrawn/superseded recommendation.
+      sql`${t.status} in ('recommended','confirmed','actioned','rejected','cleared')`,
+    ),
+  ],
+);
+
+/**
+ * Append-only audit trail for every quarantine state transition (HER-12). Each
+ * row records who moved a test from one status to another and why. Nothing in
+ * the codebase updates or deletes these rows — the trail is the durable evidence
+ * that no test was ever actioned (mutated) without an explicit recorded sign-off.
+ */
+export const quarantineAudit = pgTable(
+  'quarantine_audit',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    testIdentity: text('test_identity').notNull(),
+    /** NULL when the row is first created (no prior status). */
+    fromStatus: text('from_status'),
+    toStatus: text('to_status').notNull(),
+    /** 'system' for classifier-driven transitions, 'human'/'board' for sign-offs. */
+    actorType: text('actor_type').notNull(),
+    /** Identity of the actor: a username, board id, or the literal 'classifier'. */
+    actor: text('actor').notNull(),
+    note: text('note').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('quarantine_audit_actor_type_chk', sql`${t.actorType} in ('system','human','board')`),
+    index('quarantine_audit_test_identity_idx').on(t.testIdentity),
+    index('quarantine_audit_created_at_idx').on(t.createdAt),
+  ],
 );
 
 export type CiRun = typeof ciRuns.$inferSelect;
 export type TestResult = typeof testResults.$inferSelect;
 export type QuarantineRow = typeof quarantine.$inferSelect;
+export type QuarantineAuditRow = typeof quarantineAudit.$inferSelect;
