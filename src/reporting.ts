@@ -2,6 +2,7 @@ import { and, eq, gte, sql } from 'drizzle-orm';
 import { type Classification, classifyTest, type TestObservation } from './classifier.js';
 import type { Database } from './db/client.js';
 import { ciRuns, quarantine, testResults } from './db/schema.js';
+import { classifierGate, type GateResult } from './eval/evaluation.js';
 
 /**
  * Hours saved per avoided red-build investigation. A transparent, documented
@@ -25,6 +26,10 @@ export type FfrReport = {
   flakyFailures: number;
   ffr: number;
   reclaimedHoursEstimate: number;
+  /** Hard-gate result for the classifier. When not passed, recommendations are suppressed. */
+  gate: GateResult;
+  /** True when the gate suppressed quarantine recommendations this run. */
+  quarantineSuppressed: boolean;
   quarantine: QuarantineEntry[];
 };
 
@@ -84,17 +89,37 @@ async function loadObservations(
   return byTest;
 }
 
+export type RecomputeResult = {
+  classifications: Map<string, Classification>;
+  gate: GateResult;
+  suppressed: boolean;
+};
+
 /**
  * Recompute the quarantine table from observations in the rolling window.
+ *
+ * HARD GATE (HER-11): before any recommendation is written, the classifier is
+ * evaluated against the labeled benchmark. If the flake-verdict precision does
+ * not clear the bar (i.e. the classifier would leak a real defect into
+ * quarantine on the benchmark), ALL flake -> quarantine recommendations are
+ * SUPPRESSED for this run — nothing is recommended and any existing
+ * recommendation is cleared. This structurally enforces "a real failure must
+ * never be quarantined as a flake": if the classifier cannot prove its safety
+ * on the benchmark, it recommends nothing.
+ *
  * For each candidate test the pure classifier decides a verdict:
- *   - flake        -> UPSERT a 'recommended' quarantine row
- *   - anything else -> clear an existing recommendation (status='cleared')
+ *   - flake AND gate passed -> UPSERT a 'recommended' quarantine row
+ *   - anything else          -> clear an existing recommendation (status='cleared')
  * Idempotent: running twice with the same data yields the same rows.
+ *
+ * `gateOverride` is for tests; production passes nothing and the live gate runs.
  */
 export async function recomputeQuarantine(
   db: Database,
   windowDays: number,
-): Promise<Map<string, Classification>> {
+  gateOverride?: GateResult,
+): Promise<RecomputeResult> {
+  const gate = gateOverride ?? classifierGate();
   const observations = await loadObservations(db, windowDays);
   const classifications = new Map<string, Classification>();
 
@@ -102,7 +127,9 @@ export async function recomputeQuarantine(
     const classification = classifyTest(obs);
     classifications.set(testIdentity, classification);
 
-    if (classification.verdict === 'flake') {
+    const recommend = classification.verdict === 'flake' && gate.passed;
+
+    if (recommend) {
       const flakyCount = obs.filter((o) => o.outcome === 'failed').length;
       await db
         .insert(quarantine)
@@ -125,13 +152,18 @@ export async function recomputeQuarantine(
           },
         });
     } else {
-      // Not a flake anymore (or never was): clear any existing recommendation.
+      // Not a flake (or recommendation suppressed by the gate): clear any
+      // existing recommendation so nothing stays quarantined unsafely.
+      const reason =
+        classification.verdict === 'flake' && !gate.passed
+          ? `recommendation suppressed by classifier gate: ${gate.summary}`
+          : classification.reason;
       await db
         .update(quarantine)
         .set({
           status: 'cleared',
           classification: classification.verdict,
-          reason: classification.reason,
+          reason,
           updatedAt: new Date(),
         })
         .where(
@@ -140,7 +172,7 @@ export async function recomputeQuarantine(
     }
   }
 
-  return classifications;
+  return { classifications, gate, suppressed: !gate.passed };
 }
 
 /**
@@ -153,7 +185,7 @@ export async function recomputeQuarantine(
  * so the verdicts and quarantine table are fresh.
  */
 export async function computeFfr(db: Database, windowDays: number): Promise<FfrReport> {
-  const classifications = await recomputeQuarantine(db, windowDays);
+  const { classifications, gate, suppressed } = await recomputeQuarantine(db, windowDays);
   const start = windowStart(windowDays);
 
   // Total failed test_results in window (SQL-transparent count).
@@ -204,6 +236,8 @@ export async function computeFfr(db: Database, windowDays: number): Promise<FfrR
     flakyFailures,
     ffr,
     reclaimedHoursEstimate,
+    gate,
+    quarantineSuppressed: suppressed,
     quarantine: quarantineRows.map((r) => ({
       testIdentity: r.testIdentity,
       status: r.status === 'cleared' ? 'cleared' : 'recommended',

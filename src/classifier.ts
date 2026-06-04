@@ -31,11 +31,20 @@ export type Classification = {
  *     'passed' observation (failed-then-passed on identical code, including
  *     retry attempts), it is a flake — identical code cannot deterministically
  *     both pass and fail.
- *  2. Cross-SHA flip-flop: if across >=2 distinct SHAs there exist both pass and
- *     fail outcomes AND the time-ordered sequence of outcomes alternates at
- *     least once, the test is unstable across commits -> flake.
+ *  2. Cross-SHA flip-flop: if across >=2 distinct SHAs the time-ordered sequence
+ *     of outcomes is NON-MONOTONIC — i.e. it changes direction at least twice
+ *     (pass->fail->pass or fail->pass->fail) — the test is genuinely unstable
+ *     across commits -> flake.
+ *
+ *     A SINGLE monotonic transition (all-pass-then-all-fail, or the reverse) is
+ *     deliberately NOT treated as a flake: it is indistinguishable from a real
+ *     regression being introduced (pass->fail) or a real defect being fixed
+ *     (fail->pass). Per the HER-11 hard gate, a real failure must NEVER be
+ *     quarantined as a flake, so we resolve this ambiguity conservatively and
+ *     let such histories fall through to rule 3/4 rather than calling them flaky.
  *  3. Pure real defect: at least one failure and zero passes -> real_defect.
- *  4. Otherwise -> indeterminate (e.g. no observations, or all passes).
+ *  4. Otherwise -> indeterminate (e.g. no observations, all passes, or a single
+ *     monotonic pass<->fail transition that is too ambiguous to quarantine).
  */
 export function classifyTest(observations: TestObservation[]): Classification {
   if (observations.length === 0) {
@@ -56,8 +65,15 @@ export function classifyTest(observations: TestObservation[]): Classification {
   const hasFail = observations.some((o) => o.outcome === 'failed');
 
   // Rule 2: cross-SHA flip-flop. Requires >=2 distinct SHAs, both outcomes
-  // present, and a time-ordered alternation.
-  if (distinctShas.size >= 2 && hasPass && hasFail && hasTimeOrderedAlternation(observations)) {
+  // present, and a NON-MONOTONIC sequence (>=2 time-ordered transitions). A
+  // single monotonic transition is treated as ambiguous (regression/fix), not
+  // flaky — see the rule docstring and the HER-11 hard gate.
+  if (
+    distinctShas.size >= 2 &&
+    hasPass &&
+    hasFail &&
+    countTimeOrderedTransitions(observations) >= 2
+  ) {
     return { verdict: 'flake', reason: 'cross-SHA flip-flop' };
   }
 
@@ -95,10 +111,15 @@ function findSameShaFlake(observations: TestObservation[]): string | null {
 }
 
 /**
- * True if, ordering observations by completedAt (then attempt as a stable
- * tie-break), the outcome changes from the previous observation at least once.
+ * Count outcome transitions in the time-ordered observation sequence (ordered by
+ * completedAt, then attempt as a stable tie-break). A "transition" is any point
+ * where the outcome differs from the immediately preceding observation.
+ *
+ *   all-pass / all-fail            -> 0 transitions (stable)
+ *   all-pass-then-all-fail (or rev)-> 1 transition  (monotonic: regression/fix)
+ *   pass->fail->pass (and longer)  -> >=2 transitions (genuine flip-flop)
  */
-function hasTimeOrderedAlternation(observations: TestObservation[]): boolean {
+function countTimeOrderedTransitions(observations: TestObservation[]): number {
   const ordered = [...observations].sort((a, b) => {
     const ta = Date.parse(a.completedAt);
     const tb = Date.parse(b.completedAt);
@@ -107,10 +128,11 @@ function hasTimeOrderedAlternation(observations: TestObservation[]): boolean {
     }
     return a.attempt - b.attempt;
   });
+  let transitions = 0;
   for (let i = 1; i < ordered.length; i++) {
     if (ordered[i]?.outcome !== ordered[i - 1]?.outcome) {
-      return true;
+      transitions++;
     }
   }
-  return false;
+  return transitions;
 }

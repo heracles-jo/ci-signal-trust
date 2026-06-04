@@ -1,11 +1,13 @@
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
+import { evaluateClassifier, evaluateGate } from './eval/evaluation.js';
 import { computeFfr, type FfrReport } from './reporting.js';
 
 /**
- * CLI for operators. Currently one subcommand:
- *   report [--window-days N] [--json]
- * Reuses src/reporting.ts so the CLI and HTTP report stay identical.
+ * CLI for operators. Subcommands:
+ *   report   [--window-days N] [--json]   FFR + quarantine over the rolling window (DB)
+ *   evaluate [--json]                      classifier precision/recall + hard gate (no DB)
+ * Reuses src/reporting.ts and src/eval so the CLI matches the live behavior.
  */
 
 function parseArgs(argv: string[]): {
@@ -41,6 +43,10 @@ function renderHuman(report: FfrReport): string {
   lines.push(`Flaky failures:    ${report.flakyFailures}`);
   lines.push(`FFR:               ${(report.ffr * 100).toFixed(2)}%`);
   lines.push(`Reclaimed (est.):  ${report.reclaimedHoursEstimate.toFixed(2)} h`);
+  lines.push(`Classifier gate:   ${report.gate.passed ? 'PASS' : 'FAIL'}`);
+  if (report.quarantineSuppressed) {
+    lines.push(`  ! recommendations SUPPRESSED — ${report.gate.summary}`);
+  }
   lines.push('');
   lines.push(`Quarantine candidates (${report.quarantine.length}):`);
   if (report.quarantine.length === 0) {
@@ -55,13 +61,48 @@ function renderHuman(report: FfrReport): string {
   return lines.join('\n');
 }
 
-async function main(): Promise<void> {
-  const { command, windowDays, json } = parseArgs(process.argv.slice(2));
-  if (command !== 'report') {
-    console.error('Usage: cli report [--window-days N] [--json]');
-    process.exit(2);
-  }
+function pct(value: number | null): string {
+  return value === null ? 'n/a' : `${(value * 100).toFixed(2)}%`;
+}
 
+function renderEvaluation(): string {
+  const report = evaluateClassifier();
+  const gate = evaluateGate(report);
+  const lines: string[] = [];
+  lines.push('CI Signal Trust — Classifier Evaluation (HER-11)');
+  lines.push('================================================');
+  lines.push(`Labeled set size:  ${report.labeledSetSize} (real-run: ${report.realRunCases})`);
+  lines.push('');
+  lines.push('Flake verdict:');
+  lines.push(
+    `  precision:       ${pct(report.flake.precision)} (TP ${report.flake.truePositives}/${report.flake.predictedTotal} predicted)`,
+  );
+  lines.push(
+    `  recall:          ${pct(report.flake.recall)} (TP ${report.flake.truePositives}/${report.flake.labeledTotal} labeled)`,
+  );
+  lines.push('Real-defect verdict:');
+  lines.push(
+    `  precision:       ${pct(report.realDefect.precision)} (TP ${report.realDefect.truePositives}/${report.realDefect.predictedTotal} predicted)`,
+  );
+  lines.push(
+    `  recall:          ${pct(report.realDefect.recall)} (TP ${report.realDefect.truePositives}/${report.realDefect.labeledTotal} labeled)`,
+  );
+  lines.push('');
+  lines.push('HARD GATE — real failure must never be quarantined as flake:');
+  lines.push(`  bar (flake precision): ${pct(gate.bar)}`);
+  lines.push(`  observed:              ${pct(gate.observedFlakePrecision)}`);
+  lines.push(`  real defects leaked:   ${gate.realDefectLeakCount}`);
+  lines.push(`  result:                ${gate.passed ? 'PASS' : 'FAIL'}`);
+  if (gate.realDefectLeakCount > 0) {
+    lines.push('  leaked cases:');
+    for (const c of report.realDefectsLeakedAsFlake) {
+      lines.push(`    - ${c.id} (${c.testIdentity})`);
+    }
+  }
+  return lines.join('\n');
+}
+
+async function runReport(windowDays: number | undefined, json: boolean): Promise<void> {
   const config = loadConfig();
   const dbHandle = createDb(config.databaseUrl);
   try {
@@ -69,6 +110,27 @@ async function main(): Promise<void> {
     console.log(json ? JSON.stringify(report, null, 2) : renderHuman(report));
   } finally {
     await dbHandle.pool.end();
+  }
+}
+
+function runEvaluate(json: boolean): void {
+  if (json) {
+    const report = evaluateClassifier();
+    console.log(JSON.stringify({ ...report, gate: evaluateGate(report) }, null, 2));
+  } else {
+    console.log(renderEvaluation());
+  }
+}
+
+async function main(): Promise<void> {
+  const { command, windowDays, json } = parseArgs(process.argv.slice(2));
+  if (command === 'report') {
+    await runReport(windowDays, json);
+  } else if (command === 'evaluate') {
+    runEvaluate(json);
+  } else {
+    console.error('Usage: cli <report [--window-days N] | evaluate> [--json]');
+    process.exit(2);
   }
 }
 
