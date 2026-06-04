@@ -1,0 +1,22 @@
+# gitleaks config — default rule set plus a tight allowlist for the dummy,
+# non-secret values used by example config and tests. Real secrets are never
+# committed (they come from env / a secrets store per the ADR security baseline).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret placeholders and test fixtures"
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)test/''',
+  '''(^|/)\.env$''',
+]
+regexes = [
+  '''replace-me-[a-z-]+''',
+  '''local-dev-[a-z-]+''',
+  '''test-signing-secret''',
+  '''test-read-token''',
+  '''ci-signing-secret''',
+  '''ci-read-token''',
+  '''postgres://postgres:postgres@''',
+]

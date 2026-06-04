@@ -1,0 +1,13 @@
+allowBuilds:
+  esbuild: true
+# pnpm settings. esbuild (a transitive dep of tsx/vitest/drizzle-kit) ships a
+# postinstall that fetches its native binary; allow it so installs are clean and
+# drizzle-kit's dependency check does not fail on "ignored build scripts".
+onlyBuiltDependencies:
+  - esbuild
+
+# Force the deprecated esbuild transitively pulled by drizzle-kit's
+# @esbuild-kit/* loader up to a patched version (>=0.25) to clear the moderate
+# GHSA-67mh-4wv8-2f99 dev-server advisory. Build-tooling only; not shipped.
+overrides:
+  esbuild: '>=0.25.0'

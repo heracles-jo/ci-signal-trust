@@ -1,0 +1,41 @@
+# Local dev + test dependencies.
+#   docker compose up -d db   # start Postgres
+#   pnpm db:migrate           # apply migrations
+#   pnpm test                 # run unit + e2e
+# The `app` service is provided for a full local stack but is not required for tests.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ci_signal_trust
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d ci_signal_trust']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/ci_signal_trust
+      INGEST_SIGNING_SECRET: ${INGEST_SIGNING_SECRET:-dev-signing-secret}
+      READ_API_TOKEN: ${READ_API_TOKEN:-dev-read-token}
+      PORT: '3000'
+      FFR_WINDOW_DAYS: '14'
+    ports:
+      - '3000:3000'
+    profiles:
+      - app
+
+volumes:
+  db_data:
