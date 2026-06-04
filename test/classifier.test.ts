@@ -56,33 +56,44 @@ describe('classifyTest', () => {
       expect(result.reason).toBe('cross-SHA flip-flop');
     });
 
-    it('flags a single transition fail->pass across two SHAs', () => {
+    it('flags alternating fail/pass/fail across three SHAs (2 transitions)', () => {
       const result = classifyTest([
         obs('s1', 'failed', '2026-01-01T00:00:00Z'),
         obs('s2', 'passed', '2026-01-02T00:00:00Z'),
+        obs('s3', 'failed', '2026-01-03T00:00:00Z'),
       ]);
       expect(result.verdict).toBe('flake');
       expect(result.reason).toBe('cross-SHA flip-flop');
     });
 
     it('orders by completedAt regardless of input order before deciding alternation', () => {
-      // Provided out of chronological order; time-sorted it is pass -> fail (a flip).
+      // Provided out of chronological order; time-sorted it is pass -> fail -> pass
+      // (2 transitions) -> a genuine flip-flop.
       const result = classifyTest([
         obs('s2', 'failed', '2026-01-02T00:00:00Z'),
+        obs('s3', 'passed', '2026-01-03T00:00:00Z'),
         obs('s1', 'passed', '2026-01-01T00:00:00Z'),
       ]);
       expect(result.verdict).toBe('flake');
       expect(result.reason).toBe('cross-SHA flip-flop');
     });
 
-    it('uses attempt as a tie-break when completedAt is identical', () => {
-      const result = classifyTest([
-        obs('s1', 'passed', '2026-01-01T00:00:00Z', 2),
-        obs('s2', 'failed', '2026-01-01T00:00:00Z', 1),
+    it('does NOT flag a single monotonic transition (HER-11 hard gate)', () => {
+      // fail -> pass across two SHAs is one transition: indistinguishable from a
+      // real defect being fixed. Conservatively NOT a flake.
+      const fixed = classifyTest([
+        obs('s1', 'failed', '2026-01-01T00:00:00Z'),
+        obs('s2', 'passed', '2026-01-02T00:00:00Z'),
       ]);
-      // s2(fail, attempt1) then s1(pass, attempt2) -> one flip -> flake.
-      expect(result.verdict).toBe('flake');
-      expect(result.reason).toBe('cross-SHA flip-flop');
+      expect(fixed.verdict).toBe('indeterminate');
+
+      // pass -> fail across two SHAs is a freshly introduced regression: a real
+      // failure that must NEVER be quarantined as flake.
+      const regressed = classifyTest([
+        obs('s1', 'passed', '2026-01-01T00:00:00Z'),
+        obs('s2', 'failed', '2026-01-02T00:00:00Z'),
+      ]);
+      expect(regressed.verdict).toBe('indeterminate');
     });
   });
 
@@ -127,14 +138,18 @@ describe('classifyTest', () => {
       expect(result.reason).toBe('no failures observed');
     });
 
-    // NOTE on the residual `indeterminate` "mixed outcomes" branch in the
-    // classifier: it is intentionally defensive. To reach it we would need both a
-    // pass and a fail present, no same-SHA flake (rule 1), and no time-ordered
-    // alternation across >=2 SHAs (rule 2). With pass+fail and no same-SHA flake,
-    // the observations span >=2 distinct SHAs, and any time-ordering of a mixed
-    // pass/fail set has at least one transition -> rule 2 always fires first.
-    // The branch therefore guards against future rule changes; it is not
-    // reachable with the current rule set.
+    // The `indeterminate` "mixed outcomes" branch is reached by a single
+    // monotonic transition across SHAs (pass+fail present, no same-SHA flake, and
+    // <2 time-ordered transitions) — i.e. an introduced regression or a fix. Per
+    // the HER-11 hard gate these are deliberately NOT flakes.
+    it('returns indeterminate for a single monotonic transition across SHAs', () => {
+      const result = classifyTest([
+        obs('s1', 'passed', '2026-01-01T00:00:00Z'),
+        obs('s2', 'failed', '2026-01-02T00:00:00Z'),
+      ]);
+      expect(result.verdict).toBe('indeterminate');
+      expect(result.reason).toBe('mixed outcomes without same-SHA flake or cross-SHA alternation');
+    });
   });
 
   it('produces an exhaustive discriminated union verdict', () => {
