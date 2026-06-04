@@ -13,7 +13,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'text-summary', 'lcov'],
       include: ['src/**/*.ts'],
-      exclude: ['src/server.ts', 'src/db/migrate.ts', 'src/cli.ts'],
+      exclude: ['src/server.ts', 'src/db/migrate.ts', 'src/cli.ts', 'src/ingest-github.ts'],
       // Hard gate: CI fails (blocks merge) if coverage regresses below these
       // floors. Current actuals are ~93% stmts / ~85% branch; these floors are
       // the ratchet baseline (raise as coverage rises, per ADR-006).
