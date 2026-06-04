@@ -1,9 +1,16 @@
 import { defineConfig } from 'vitest/config';
 
+// In CI we additionally emit a JUnit XML report (uploaded as a build artifact)
+// so per-test outcomes are captured going forward. Locally we keep the default
+// reporter only, so `pnpm test` does not leave a stray report file behind.
+const inCI = !!process.env.GITHUB_ACTIONS;
+
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    reporters: inCI ? ['default', 'junit'] : ['default'],
+    outputFile: inCI ? { junit: './reports/junit.xml' } : undefined,
     // E2E spins up a real Postgres + Fastify; give it room and run files serially
     // so the shared DB isn't truncated out from under a parallel suite.
     testTimeout: 30_000,

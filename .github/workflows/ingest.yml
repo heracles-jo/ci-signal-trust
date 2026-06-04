@@ -1,0 +1,78 @@
+name: Daily ingest
+
+# Pulls our own GitHub Actions run/test history into the persistent Postgres so
+# the FFR signal accrues continuously (HER-9). The pull-ingester is idempotent
+# on (provider, externalRunId): re-running never double-counts, so a daily cron
+# plus on-demand dispatch is safe.
+on:
+  schedule:
+    # 06:17 UTC daily — off the top of the hour to dodge cron congestion.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      max_runs:
+        description: 'Cap workflow runs to scan (newest first). Blank = all available.'
+        required: false
+        default: ''
+
+# Least privilege: the default GITHUB_TOKEN only needs to read this repo's
+# Actions runs + artifacts. No write scope, no separate PAT secret.
+permissions:
+  contents: read
+  actions: read
+
+# Never let two ingests race against the shared persistent DB.
+concurrency:
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+
+    env:
+      # Persistent managed Postgres connection string (repo secret, never committed).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Read-only token for the Actions API; the workflow's own GITHUB_TOKEN.
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Guard — DATABASE_URL secret must be set
+        run: |
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::error::DATABASE_URL repo secret is not set. Point it at the persistent managed Postgres (see README)."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Apply migrations (idempotent)
+        run: pnpm db:migrate
+
+      - name: Pull ingest (idempotent)
+        run: |
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          MAX_RUNS_ARG=""
+          if [ -n "${{ github.event.inputs.max_runs }}" ]; then
+            MAX_RUNS_ARG="--max-runs ${{ github.event.inputs.max_runs }}"
+          fi
+          pnpm ingest:github --owner "$OWNER" --repo "$REPO" $MAX_RUNS_ARG
