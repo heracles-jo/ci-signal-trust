@@ -1,5 +1,6 @@
 import { loadConfig } from './config.js';
 import { createDb } from './db/client.js';
+import { ingestGithubRepo } from './providers/github.js';
 import { computeFfr, type FfrReport } from './reporting.js';
 
 /**
@@ -57,8 +58,46 @@ function renderHuman(report: FfrReport): string {
 
 async function main(): Promise<void> {
   const { command, windowDays, json } = parseArgs(process.argv.slice(2));
+
+  if (command === 'ingest') {
+    // Pull-ingest our own CI history from the GitHub API.
+    // Required env: DATABASE_URL, GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME
+    const { DATABASE_URL, GITHUB_TOKEN, GITHUB_REPO_OWNER, GITHUB_REPO_NAME } = process.env;
+    for (const [name, val] of [
+      ['DATABASE_URL', DATABASE_URL],
+      ['GITHUB_TOKEN', GITHUB_TOKEN],
+      ['GITHUB_REPO_OWNER', GITHUB_REPO_OWNER],
+      ['GITHUB_REPO_NAME', GITHUB_REPO_NAME],
+    ] as [string, string | undefined][]) {
+      if (!val) {
+        console.error(`Missing required env var: ${name}`);
+        process.exit(2);
+      }
+    }
+    const dbHandle = createDb(DATABASE_URL as string);
+    try {
+      const summary = await ingestGithubRepo(dbHandle.db, {
+        owner: GITHUB_REPO_OWNER as string,
+        repo: GITHUB_REPO_NAME as string,
+        token: GITHUB_TOKEN as string,
+        windowDays: windowDays ?? 14,
+      });
+      console.log(
+        json
+          ? JSON.stringify(summary)
+          : `Ingested: fetched=${summary.fetched} mapped=${summary.mapped} ` +
+              `accepted=${summary.accepted} duplicate=${summary.duplicate}`,
+      );
+    } finally {
+      await dbHandle.pool.end();
+    }
+    return;
+  }
+
   if (command !== 'report') {
-    console.error('Usage: cli report [--window-days N] [--json]');
+    console.error('Usage:');
+    console.error('  cli report [--window-days N] [--json]');
+    console.error('  cli ingest [--window-days N] [--json]');
     process.exit(2);
   }
 

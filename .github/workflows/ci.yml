@@ -70,7 +70,15 @@ jobs:
         run: pnpm db:migrate
 
       - name: Test + coverage (Vitest, real Postgres E2E)
-        run: pnpm test:cov
+        run: pnpm exec vitest run --coverage --reporter=verbose --reporter=junit "--outputFile.junit=test-results/junit.xml"
+
+      - name: Upload JUnit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/junit.xml
+          if-no-files-found: warn
 
       - name: Dependency audit (block high/critical)
         run: pnpm audit --audit-level high

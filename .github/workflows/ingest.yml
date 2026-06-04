@@ -1,0 +1,102 @@
+name: Daily CI Ingestion
+
+# Pulls our own workflow-run history via the GitHub API and feeds it into the
+# persistent FFR database. Running daily keeps the rolling window fresh;
+# ingestion is idempotent so duplicate runs are skipped without error.
+#
+# Required GitHub repo secret:
+#   CI_SIGNAL_DATABASE_URL   — connection string for the persistent Postgres
+#
+# The workflow uses the built-in GITHUB_TOKEN (actions:read) to query the
+# GitHub API for our own repo — no additional PAT required.
+#
+# When the secret is absent the job exits 0 with a warning so forks and dev
+# branches don't fail for missing infrastructure.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Days of history to backfill (default 14)'
+        required: false
+        default: '14'
+
+permissions:
+  contents: read
+  actions: read     # required to query workflow runs via the REST API
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check required secret
+        id: check_secrets
+        run: |
+          if [ -z "${{ secrets.CI_SIGNAL_DATABASE_URL }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::CI_SIGNAL_DATABASE_URL not set — skipping ingest. Set this secret to a persistent Postgres URL to enable daily FFR baseline collection."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check_secrets.outputs.skip == 'false'
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: steps.check_secrets.outputs.skip == 'false'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        if: steps.check_secrets.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.check_secrets.outputs.skip == 'false'
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations (idempotent)
+        if: steps.check_secrets.outputs.skip == 'false'
+        env:
+          DATABASE_URL: ${{ secrets.CI_SIGNAL_DATABASE_URL }}
+        run: pnpm db:migrate
+
+      - name: Ingest workflow runs
+        if: steps.check_secrets.outputs.skip == 'false'
+        env:
+          DATABASE_URL: ${{ secrets.CI_SIGNAL_DATABASE_URL }}
+          # Built-in token has actions:read on our own repo — no separate PAT needed.
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPO_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPO_NAME: ${{ github.event.repository.name }}
+          # These vars are not used by the ingest command but kept for completeness.
+          INGEST_SIGNING_SECRET: not-used-by-ingest-command
+          READ_API_TOKEN: not-used-by-ingest-command
+        run: |
+          WINDOW="${{ inputs.window_days || '14' }}"
+          echo "Ingesting last ${WINDOW} days of CI history for ${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}"
+          pnpm cli ingest --window-days "${WINDOW}" --json
+
+      - name: Emit FFR report
+        if: steps.check_secrets.outputs.skip == 'false'
+        env:
+          DATABASE_URL: ${{ secrets.CI_SIGNAL_DATABASE_URL }}
+          INGEST_SIGNING_SECRET: not-used-by-report-command
+          READ_API_TOKEN: not-used-by-report-command
+        run: pnpm cli report --json | tee ffr-report.json
+
+      - name: Upload FFR report artifact
+        if: steps.check_secrets.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffr-report-${{ github.run_id }}
+          path: ffr-report.json
+          retention-days: 90
