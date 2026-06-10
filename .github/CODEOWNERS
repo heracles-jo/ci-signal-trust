@@ -1,0 +1,3 @@
+# Default review ownership for the CI Signal Trust codebase.
+# Every change requires review per the engineering quality bar (HER-5).
+* @heracles-jo
